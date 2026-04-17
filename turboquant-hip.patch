@@ -1,0 +1,112 @@
+diff --git a/ggml/src/ggml-cuda/tq3-native.cu b/ggml/src/ggml-cuda/tq3-native.cu
+index 8fd2a1619..33ab7fc10 100644
+--- a/ggml/src/ggml-cuda/tq3-native.cu
++++ b/ggml/src/ggml-cuda/tq3-native.cu
+@@ -1,5 +1,5 @@
+-#include "tq3-native.cuh"
+ #include "common.cuh"
++#include "tq3-native.cuh"
+ 
+ __global__ void ggml_cuda_native_tq3_dot_kernel(
+         const block_tq3_0 * __restrict__ in,
+diff --git a/ggml/src/ggml-cuda/tq3-native.cuh b/ggml/src/ggml-cuda/tq3-native.cuh
+index b33e52aa6..8a7331f48 100644
+--- a/ggml/src/ggml-cuda/tq3-native.cuh
++++ b/ggml/src/ggml-cuda/tq3-native.cuh
+@@ -1,11 +1,21 @@
+ #pragma once
+ 
++#if defined(GGML_USE_HIP)
++#include <hip/hip_fp16.h>
++#else
+ #include <cuda_fp16.h>
++#endif
+ #include <stdint.h>
+ 
++#if defined(GGML_USE_HIP)
++#define GGML_COMMON_DECL_HIP
++#include "../ggml-common.h"
++#undef GGML_COMMON_DECL_HIP
++#else
+ #define GGML_COMMON_DECL_CUDA
+ #include "../ggml-common.h"
+ #undef GGML_COMMON_DECL_CUDA
++#endif
+ 
+ #ifndef QK_TQ3_0
+ #define QK_TQ3_0 32
+diff --git a/ggml/src/ggml-cuda/vecdotq.cuh b/ggml/src/ggml-cuda/vecdotq.cuh
+index 2fdeb5dbf..58ac44020 100644
+--- a/ggml/src/ggml-cuda/vecdotq.cuh
++++ b/ggml/src/ggml-cuda/vecdotq.cuh
+@@ -1342,8 +1342,8 @@ static __device__ __forceinline__ float tq3_1s_dot_subgroup_q8_1(
+     const int a_lo = *(const int *)&bq8_1->qs[q8 + 0];
+     const int a_hi = *(const int *)&bq8_1->qs[q8 + 4];
+ 
+-    int sumi = __dp4a(w_lo, a_lo, 0);
+-    sumi     = __dp4a(w_hi, a_hi, sumi);
++    int sumi = ggml_cuda_dp4a(w_lo, a_lo, 0);
++    sumi     = ggml_cuda_dp4a(w_hi, a_hi, sumi);
+ 
+     const float d = (g < 2) ? __half2float(bq->d0) : __half2float(bq->d1);
+     const float2 ds8 = __half22float2(bq8_1->ds);
+@@ -1410,8 +1410,8 @@ static __device__ __forceinline__ float tq3_4s_dot_subgroup_q8_1(
+     const int a_hi = *(const int *)&bq8_1->qs[q8 + 4];
+ 
+     // dp4a: each does 4 int8 multiply-adds
+-    int sumi = __dp4a(w_lo, a_lo, 0);
+-    sumi     = __dp4a(w_hi, a_hi, sumi);
++    int sumi = ggml_cuda_dp4a(w_lo, a_lo, 0);
++    sumi     = ggml_cuda_dp4a(w_hi, a_hi, sumi);
+ 
+     // Scale: d_weight * (centroid_scale / 127) * d_activation
+     // centroids range [-2.1519, 2.1519], levels range [-127, 127]
+diff --git a/ggml/src/ggml-cuda/vendors/hip.h b/ggml/src/ggml-cuda/vendors/hip.h
+index 898fec31e..890106c6d 100644
+--- a/ggml/src/ggml-cuda/vendors/hip.h
++++ b/ggml/src/ggml-cuda/vendors/hip.h
+@@ -34,11 +34,30 @@
+ #define CU_MEM_ACCESS_FLAGS_PROT_READWRITE hipMemAccessFlagsProtReadWrite
+ #define CU_CHECK(fn) {hipError_t err = fn; if(err != hipSuccess) { GGML_ABORT("HipVMM Failure: %s\n", hipGetErrorString(err)); }}
+ #define NCCL_CHECK(fn) {ncclResult_t err = fn; if(err != ncclSuccess) { GGML_ABORT("RCCL Failure RCCL returned: %i\n", err); }}
+-#define __shfl_sync(mask, var, laneMask, width) __shfl(var, laneMask, width)
+-#define __shfl_up_sync(mask, var, laneMask, width) __shfl_up(var, laneMask, width)
+-#define __shfl_xor_sync(mask, var, laneMask, width) __shfl_xor(var, laneMask, width)
++// __shfl_sync: support 3-arg (mask, var, srcLane) and 4-arg (mask, var, srcLane, width). HIP ignores mask.
++#define __SHFL_SYNC_3(mask, var, srcLane)        __shfl(var, srcLane, warpSize)
++#define __SHFL_SYNC_4(mask, var, srcLane, width) __shfl(var, srcLane, width)
++#define __SHFL_GET_MACRO(_1, _2, _3, _4, NAME, ...) NAME
++#define __shfl_sync(...) __SHFL_GET_MACRO(__VA_ARGS__, __SHFL_SYNC_4, __SHFL_SYNC_3)(__VA_ARGS__)
++
++#define __SHFL_UP_SYNC_3(mask, var, delta)        __shfl_up(var, delta, warpSize)
++#define __SHFL_UP_SYNC_4(mask, var, delta, width) __shfl_up(var, delta, width)
++#define __SHFL_UP_GET(_1, _2, _3, _4, NAME, ...) NAME
++#define __shfl_up_sync(...) __SHFL_UP_GET(__VA_ARGS__, __SHFL_UP_SYNC_4, __SHFL_UP_SYNC_3)(__VA_ARGS__)
++
++#define __SHFL_XOR_SYNC_3(mask, var, laneMask)        __shfl_xor(var, laneMask, warpSize)
++#define __SHFL_XOR_SYNC_4(mask, var, laneMask, width) __shfl_xor(var, laneMask, width)
++#define __SHFL_XOR_GET(_1, _2, _3, _4, NAME, ...) NAME
++#define __shfl_xor_sync(...) __SHFL_XOR_GET(__VA_ARGS__, __SHFL_XOR_SYNC_4, __SHFL_XOR_SYNC_3)(__VA_ARGS__)
++
++#define __SHFL_DOWN_SYNC_3(mask, var, delta)        __shfl_down(var, delta, warpSize)
++#define __SHFL_DOWN_SYNC_4(mask, var, delta, width) __shfl_down(var, delta, width)
++#define __SHFL_DOWN_GET(_1, _2, _3, _4, NAME, ...) NAME
++#define __shfl_down_sync(...) __SHFL_DOWN_GET(__VA_ARGS__, __SHFL_DOWN_SYNC_4, __SHFL_DOWN_SYNC_3)(__VA_ARGS__)
++
+ #define __all_sync(mask, var) __all(var)
+ #define __any_sync(mask, var) __any(var)
++#define __ballot_sync(mask, var) ((uint32_t)__ballot(var))
+ #define cublasStrsmBatched hipblasStrsmBatched
+ #define cublasCreate hipblasCreate
+ #define cublasDestroy hipblasDestroy
+@@ -61,8 +80,10 @@
+ #define cudaError_t hipError_t
+ #define cudaErrorPeerAccessAlreadyEnabled hipErrorPeerAccessAlreadyEnabled
+ #define cudaErrorPeerAccessNotEnabled hipErrorPeerAccessNotEnabled
++#define cudaEventCreate hipEventCreate
+ #define cudaEventCreateWithFlags hipEventCreateWithFlags
+ #define cudaEventDisableTiming hipEventDisableTiming
++#define cudaEventElapsedTime hipEventElapsedTime
+ #define cudaEventRecord hipEventRecord
+ #define cudaEventSynchronize hipEventSynchronize
+ #define cudaEvent_t hipEvent_t
